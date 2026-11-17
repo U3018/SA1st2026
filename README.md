@@ -1,28 +1,31 @@
-# SA1st2026
+# Knife Log
 
-丸太にナイフを投げるゲームです。Python 3 と標準ライブラリの Tkinter で動作し、pip による追加パッケージのインストールは不要です。
+A small knife-throwing game made with Python 3 and the standard-library Tkinter GUI. It does not need pip packages.
 
-## 起動
+## Run
 
 ```sh
-./run.sh
+python3 main.py
 ```
 
-または `python3 main.py` で直接起動できます。Ubuntu/Debian の最小構成などで Tkinter がない場合は `sudo apt install python3-tk` が必要です。
+You can also run `./run.sh`.
 
-操作: クリックまたは Space でナイフを投げます。R で最初から、Esc で終了します。
+Controls: click or press Space to throw. Press R to restart and Esc to quit.
 
-## コード構成
+The lower panel shows the remaining knife count and a preview of the next knife. The `THROW HERE` label and `v v v` marker show the fixed impact point at the top of the log.
 
-画面の各要素は `main.py` の `KnifeGame` クラス内の描画メソッドに分けています。見た目を調整するときは対応するメソッドを編集してください。
+## Editing
 
-難易度や得点を変えるときは、`main.py` の先頭にある定数を編集します。たとえば `KNIVES_PER_ROUND` は1ステージのナイフ数、`START_ROTATION_SPEED` は最初の回転速度、`SPEED_UP_PER_ROUND` はステージごとの加速量、`COLLISION_ANGLE` はナイフ同士が当たる範囲、`POINTS_PER_KNIFE` は1本あたりの得点です。色は `COLORS` で変更できます。
+Change the constants near the top of `main.py` to adjust the window, log size, number of knives, rotation speed, collision range, and score. Change `COLORS` to adjust the palette.
 
-- `draw_background`: 背景色と装飾
-- `draw_header`: タイトルと説明
-- `draw_log`: 丸太
-- `draw_playfield`: 刺さったナイフ、照準、残りナイフ
-- `draw_hud`: スコアとステージ表示
-- `draw_overlay`: 操作案内とゲームオーバー表示
-- `GameState`: ゲームの状態
-- `throw_knife`: 投げる処理と当たり判定
+The `KnifeGame` drawing methods are split by screen area:
+
+- `draw_background`: background decorations
+- `draw_header`: title and subtitle
+- `draw_log`: rotating log
+- `draw_throw_marker`: fixed knife impact point
+- `draw_playfield`: stuck knives and target marker
+- `draw_hud`: score and stage
+- `draw_knife_status`: remaining count and knife preview panel
+- `draw_ready_knife`: preview knife drawing
+- `draw_overlay`: controls and game-over screen
