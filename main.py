@@ -1,121 +1,198 @@
-"""Rotating log knife game. Install with `python3 -m pip install pygame` then run."""
+"""標準ライブラリだけで動く、丸太にナイフを投げるゲーム。"""
 
 import math
-import random
-import sys
+import tkinter as tk
+from dataclasses import dataclass, field
 
-import pygame
-
+# 編集ポイント: 画面サイズ、丸太の位置、ゲームの難易度はここで調整できます。
 WIDTH, HEIGHT = 800, 600
 CENTER = (WIDTH // 2, 260)
-LOG_R = 112
-KNIFE_R = 137
+LOG_RADIUS = 112
+KNIFE_RADIUS = 137
 KNIVES_PER_ROUND = 8
-BG = (17, 26, 38)
+START_ROTATION_SPEED = 1.35
+SPEED_UP_PER_ROUND = 0.32
+MAX_ROTATION_SPEED = 3.8
+COLLISION_ANGLE = 0.20
+POINTS_PER_KNIFE = 10
+FRAME_MS = 16
+
+COLORS = {
+    "background": "#111a26",
+    "cream": "#f4ead7",
+    "muted": "#9aabba",
+    "knife": "#e0e9ef",
+    "handle": "#b47042",
+    "log_outer": "#3b241a",
+    "log": "#9b6038",
+    "log_edge": "#d09a61",
+    "gold": "#f4c95d",
+}
 
 
-def draw_knife(surface, angle, radius, scale=1.0, color=(224, 233, 239)):
-    x = CENTER[0] + math.cos(angle) * radius
-    y = CENTER[1] + math.sin(angle) * radius
-    tip = (round(x), round(y))
-    blade_end = (round(x - math.cos(angle) * 25 * scale), round(y - math.sin(angle) * 25 * scale))
-    handle_end = (round(x - math.cos(angle) * 37 * scale), round(y - math.sin(angle) * 37 * scale))
-    pygame.draw.line(surface, color, tip, blade_end, max(2, round(5 * scale)))
-    pygame.draw.line(surface, (180, 112, 66), blade_end, handle_end, max(3, round(9 * scale)))
-    pygame.draw.circle(surface, (247, 249, 250), tip, max(2, round(3 * scale)))
+@dataclass
+class GameState:
+    angle: float = 0.0
+    speed: float = START_ROTATION_SPEED
+    stuck: list[float] = field(default_factory=list)
+    remaining: int = KNIVES_PER_ROUND
+    score: int = 0
+    level: int = 1
+    game_over: bool = False
+
+    def reset(self):
+        self.angle = 0.0
+        self.speed = START_ROTATION_SPEED
+        self.stuck.clear()
+        self.remaining = KNIVES_PER_ROUND
+        self.score = 0
+        self.level = 1
+        self.game_over = False
+
+
+class KnifeGame:
+    """ゲーム状態、入力、描画をまとめる Tkinter アプリ。"""
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("丸太にナイフ！")
+        self.root.resizable(False, False)
+        self.canvas = tk.Canvas(root, width=WIDTH, height=HEIGHT,
+                                bg=COLORS["background"], highlightthickness=0)
+        self.canvas.pack()
+        self.state = GameState()
+        self.root.bind("<space>", self.on_throw)
+        self.root.bind("<r>", self.on_reset)
+        self.root.bind("<Escape>", lambda _event: self.root.destroy())
+        self.canvas.bind("<Button-1>", self.on_click)
+        self.draw()
+        self.tick()
+
+    # 個別の描画関数を編集すると、各画面要素の見た目を変更できます。
+    def draw_background(self):
+        self.canvas.configure(bg=COLORS["background"])
+        for x, y in ((65, 72), (178, 130), (711, 90), (638, 174),
+                     (91, 370), (724, 420), (220, 480)):
+            self.canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill="#415263", outline="")
+
+    def draw_header(self):
+        self.canvas.create_text(WIDTH // 2, 39, text="丸太にナイフ！",
+                                fill=COLORS["cream"], font=("TkDefaultFont", 20, "bold"))
+        self.canvas.create_text(WIDTH // 2, 70, text="回転する丸太に、ナイフをすき間なく刺そう",
+                                fill=COLORS["muted"], font=("TkDefaultFont", 11))
+
+    def draw_log(self):
+        x, y = CENTER
+        r = LOG_RADIUS
+        self.canvas.create_oval(x-r-9, y-r-9, x+r+9, y+r+9, fill=COLORS["log_outer"], outline="")
+        self.canvas.create_oval(x-r, y-r, x+r, y+r, fill=COLORS["log"], outline=COLORS["log_edge"], width=3)
+        for radius, color, width in ((89, "#754327", 3), (62, "#b57b4b", 2), (34, "#754327", 3)):
+            self.canvas.create_oval(x-radius, y-radius, x+radius, y+radius,
+                                    outline=color, width=width)
+        self.canvas.create_oval(x-7, y-7, x+7, y+7, fill="#593722", outline="")
+
+    def draw_knife(self, angle, radius, scale=1.0):
+        x = CENTER[0] + math.cos(angle) * radius
+        y = CENTER[1] + math.sin(angle) * radius
+        blade_x, blade_y = x - math.cos(angle) * 25 * scale, y - math.sin(angle) * 25 * scale
+        handle_x, handle_y = x - math.cos(angle) * 37 * scale, y - math.sin(angle) * 37 * scale
+        self.canvas.create_line(x, y, blade_x, blade_y, fill=COLORS["knife"],
+                                width=max(2, 5 * scale), capstyle=tk.ROUND)
+        self.canvas.create_line(blade_x, blade_y, handle_x, handle_y, fill=COLORS["handle"],
+                                width=max(3, 9 * scale), capstyle=tk.ROUND)
+        self.canvas.create_oval(x-3*scale, y-3*scale, x+3*scale, y+3*scale,
+                                fill="#f7f9fa", outline="")
+
+    def draw_playfield(self):
+        state = self.state
+        for angle in state.stuck:
+            self.draw_knife(angle + state.angle, KNIFE_RADIUS, 0.9)
+        marker_angle = state.angle - math.pi / 2
+        mx = CENTER[0] + math.cos(marker_angle) * 78
+        my = CENTER[1] + math.sin(marker_angle) * 78
+        self.canvas.create_oval(mx-8, my-8, mx+8, my+8, fill=COLORS["gold"], outline="#fff0ae", width=2)
+        for i in range(state.remaining):
+            self.draw_knife(math.pi / 2, 194 + i * 24, 0.58)
+
+    def draw_hud(self):
+        state = self.state
+        self.canvas.create_text(48, 130, anchor="w", text=f"SCORE  {state.score:04d}",
+                                fill=COLORS["cream"], font=("TkDefaultFont", 13, "bold"))
+        self.canvas.create_text(WIDTH - 48, 130, anchor="e", text=f"STAGE  {state.level}",
+                                fill=COLORS["cream"], font=("TkDefaultFont", 13, "bold"))
+
+    def draw_overlay(self):
+        state = self.state
+        if state.game_over:
+            self.canvas.create_rectangle(0, 0, WIDTH, HEIGHT, fill="#05090f", stipple="gray50", outline="")
+            self.canvas.create_text(WIDTH//2, 250, text="GAME OVER", fill="#ff8070",
+                                    font=("TkDefaultFont", 22, "bold"))
+            self.canvas.create_text(WIDTH//2, 292, text=f"スコア  {state.score}",
+                                    fill=COLORS["cream"], font=("TkDefaultFont", 14, "bold"))
+            self.canvas.create_text(WIDTH//2, 334, text="クリック / Space でリトライ",
+                                    fill="#c1ced8", font=("TkDefaultFont", 11))
+        else:
+            self.canvas.create_text(WIDTH//2, 520, text="クリック または Space で投げる",
+                                    fill=COLORS["cream"], font=("TkDefaultFont", 13, "bold"))
+            self.canvas.create_text(WIDTH//2, 552,
+                                    text="刺さったナイフに当たると終了  ·  R で最初から  ·  Esc で終了",
+                                    fill="#8293a2", font=("TkDefaultFont", 10))
+
+    def draw(self):
+        self.canvas.delete("all")
+        self.draw_background()
+        self.draw_header()
+        self.draw_log()
+        self.draw_playfield()
+        self.draw_hud()
+        self.draw_overlay()
+
+    def throw_knife(self):
+        state = self.state
+        if state.game_over:
+            return
+        impact = -math.pi / 2 - state.angle
+        collision = any(abs((impact - old + math.pi) % (2 * math.pi) - math.pi) < COLLISION_ANGLE
+                        for old in state.stuck)
+        if collision:
+            state.game_over = True
+        else:
+            state.stuck.append(impact)
+            state.score += POINTS_PER_KNIFE
+            state.remaining -= 1
+            if state.remaining == 0:
+                state.level += 1
+                state.remaining = KNIVES_PER_ROUND
+                state.speed = min(state.speed + SPEED_UP_PER_ROUND, MAX_ROTATION_SPEED)
+                state.stuck.clear()
+
+    def on_throw(self, _event=None):
+        if self.state.game_over:
+            self.state.reset()
+        else:
+            self.throw_knife()
+        self.draw()
+
+    def on_reset(self, _event=None):
+        self.state.reset()
+        self.draw()
+
+    def on_click(self, _event=None):
+        self.on_throw()
+
+    def tick(self):
+        if not self.state.game_over:
+            self.state.angle += self.state.speed * FRAME_MS / 1000
+        self.draw()
+        self.root.after(FRAME_MS, self.tick)
 
 
 def main():
-    pygame.init()
-    pygame.display.set_caption("丸太にナイフ！")
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    clock = pygame.time.Clock()
-    # Try Japanese-capable fonts, with a system default fallback.
-    font_name = next((name for name in ("Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Meiryo")
-                      if pygame.font.match_font(name)), None)
-    title_font = pygame.font.SysFont(font_name, 27, bold=True)
-    ui_font = pygame.font.SysFont(font_name, 18, bold=True)
-    small_font = pygame.font.SysFont(font_name, 14)
-
-    angle, speed, stuck = 0.0, 1.35, []
-    remaining, score, level = KNIVES_PER_ROUND, 0, 1
-    game_over = False
-    running = True
-
-    def reset():
-        return 0.0, 1.35, [], KNIVES_PER_ROUND, 0, 1, False
-
-    while running:
-        dt = min(clock.tick(60) / 1000, 0.05)
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-                elif event.key == pygame.K_r or (game_over and event.key in (pygame.K_SPACE, pygame.K_RETURN)):
-                    angle, speed, stuck, remaining, score, level, game_over = reset()
-                elif event.key == pygame.K_SPACE and not game_over:
-                    local_impact = -math.pi / 2 - angle
-                    if any(abs((local_impact - old + math.pi) % (2 * math.pi) - math.pi) < 0.20 for old in stuck):
-                        game_over = True
-                    else:
-                        stuck.append(local_impact)
-                        score += 10
-                        remaining -= 1
-                        if remaining == 0:
-                            level += 1
-                            remaining = KNIVES_PER_ROUND
-                            speed = min(speed + 0.32, 3.8)
-                            stuck.clear()
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if game_over:
-                    angle, speed, stuck, remaining, score, level, game_over = reset()
-                else:
-                    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE))
-
-        if not game_over:
-            angle += speed * dt
-        screen.fill(BG)
-        for x, y in ((65, 72), (178, 130), (711, 90), (638, 174), (91, 370), (724, 420), (220, 480)):
-            pygame.draw.circle(screen, (65, 82, 99), (x, y), 2)
-        screen.blit(title_font.render("丸太にナイフ！", True, (244, 234, 215)), (WIDTH // 2 - 90, 26))
-        screen.blit(small_font.render("回転する丸太に、ナイフをすき間なく刺そう", True, (154, 171, 186)), (WIDTH // 2 - 130, 63))
-        pygame.draw.circle(screen, (59, 36, 26), CENTER, LOG_R + 9)
-        pygame.draw.circle(screen, (155, 96, 56), CENTER, LOG_R)
-        pygame.draw.circle(screen, (208, 154, 97), CENTER, LOG_R, 3)
-        for radius, color, width in ((89, (117, 67, 39), 3), (62, (181, 123, 75), 2), (34, (117, 67, 39), 3)):
-            pygame.draw.circle(screen, color, CENTER, radius, width)
-        pygame.draw.circle(screen, (89, 55, 34), CENTER, 7)
-        for old in stuck:
-            draw_knife(screen, old + angle, KNIFE_R, 0.9)
-        marker_angle = angle - math.pi / 2
-        marker = (round(CENTER[0] + math.cos(marker_angle) * 78), round(CENTER[1] + math.sin(marker_angle) * 78))
-        pygame.draw.circle(screen, (244, 201, 93), marker, 8)
-        pygame.draw.circle(screen, (255, 240, 174), marker, 8, 2)
-        screen.blit(ui_font.render(f"SCORE  {score:04d}", True, (244, 234, 215)), (48, 121))
-        stage = ui_font.render(f"STAGE  {level}", True, (244, 234, 215))
-        screen.blit(stage, (WIDTH - 48 - stage.get_width(), 121))
-        for i in range(remaining):
-            draw_knife(screen, math.pi / 2, 194 + i * 24, 0.58)
-        if game_over:
-            shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-            shade.fill((5, 9, 15, 190))
-            screen.blit(shade, (0, 0))
-            for label, y, font, color in (("GAME OVER", 236, title_font, (255, 128, 111)),
-                                           (f"スコア  {score}", 283, ui_font, (244, 234, 215)),
-                                           ("クリック / Space でリトライ", 326, small_font, (193, 206, 216))):
-                image = font.render(label, True, color)
-                screen.blit(image, (WIDTH // 2 - image.get_width() // 2, y))
-        else:
-            hint = ui_font.render("クリック または Space で投げる", True, (244, 234, 215))
-            screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, 520))
-            foot = small_font.render("刺さったナイフに当たると終了  ·  R で最初から  ·  Esc で終了", True, (130, 147, 162))
-            screen.blit(foot, (WIDTH // 2 - foot.get_width() // 2, 552))
-        pygame.display.flip()
-    pygame.quit()
+    root = tk.Tk()
+    KnifeGame(root)
+    root.mainloop()
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
