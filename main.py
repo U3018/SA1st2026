@@ -1,6 +1,19 @@
+import atexit
 import math
+import os
+import random
+import struct
+import tempfile
 import time
 import tkinter as tk
+import wave
+
+# winsound は Windows 専用です。ほかのOSでもゲームが起動できるよう、
+# 利用できない場合は Tkinter のシステムベルを効果音の代わりに使います。
+try:
+    import winsound
+except ImportError:
+    winsound = None
 
 
 # 画面やゲームの速さを調整する設定値です。
@@ -15,6 +28,116 @@ THROW_SPEED = 820
 TARGET_ANGLE = math.pi / 2  # 投げる先の角度。画面では真下を表します。
 
 
+def create_wav_file(kind, sample_rate=44100):
+    """効果音を簡単な波形で作り、一時WAVファイルのパスを返す。"""
+    file_descriptor, path = tempfile.mkstemp(suffix=f"_{kind}.wav")
+    os.close(file_descriptor)
+
+    # 終了時に一時ファイルを削除します。削除できない場合も終了処理を止めません。
+    def remove_file():
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    atexit.register(remove_file)
+
+    with wave.open(path, "wb") as wav_file:
+        wav_file.setnchannels(1)  # モノラル
+        wav_file.setsampwidth(2)  # 16ビット音声
+        wav_file.setframerate(sample_rate)
+
+        frames = bytearray()
+
+        if kind == "throw":
+            # 投げ始めの短い風切り音。ランダムな成分を加えてノイズらしくします。
+            duration = 0.15
+            total_samples = int(sample_rate * duration)
+            for index in range(total_samples):
+                elapsed = index / sample_rate
+                progress = index / total_samples
+                envelope = 1.0 - progress
+                frequency = 500 + 800 * progress
+                value = math.sin(2 * math.pi * frequency * elapsed) * 0.75
+                value += random.uniform(-0.2, 0.2)
+                sample = int(max(-1.0, min(1.0, value * envelope)) * 28000)
+                frames.extend(struct.pack("<h", sample))
+
+        elif kind == "hit":
+            # 丸太に刺さる低い音。最初だけノイズを足して、当たった感じを出します。
+            duration = 0.18
+            total_samples = int(sample_rate * duration)
+            for index in range(total_samples):
+                elapsed = index / sample_rate
+                envelope = math.exp(-index / (sample_rate * 0.04))
+                frequency = 160 * math.exp(-index / (sample_rate * 0.05)) + 65
+                noise = random.uniform(-0.6, 0.6) if index < sample_rate * 0.02 else 0.0
+                value = math.sin(2 * math.pi * frequency * elapsed) * 0.9 + noise
+                sample = int(max(-1.0, min(1.0, value * envelope)) * 30000)
+                frames.extend(struct.pack("<h", sample))
+
+        elif kind == "gameover":
+            # ゲームオーバーを知らせる、低く下降するブザー音です。
+            duration = 0.55
+            total_samples = int(sample_rate * duration)
+            for index in range(total_samples):
+                elapsed = index / sample_rate
+                progress = index / total_samples
+                envelope = 1.0 - progress * 0.7
+                frequency = 190 if index < total_samples * 0.45 else 130
+                value = math.sin(2 * math.pi * frequency * elapsed)
+                value += 0.5 * math.sin(4 * math.pi * frequency * elapsed)
+                sample = int(max(-1.0, min(1.0, value * 0.6 * envelope)) * 28000)
+                frames.extend(struct.pack("<h", sample))
+
+        wav_file.writeframes(bytes(frames))
+
+    return path
+
+
+class SoundPlayer:
+    """効果音の再生を担当する。Windows以外ではシステムベルに切り替える。"""
+
+    def __init__(self, root):
+        self.root = root
+        self.paths = {}
+
+        # WAVファイルを使う再生機能はWindowsに限られるため、
+        # 他のOSではファイルを作らず bell() に切り替えます。
+        if winsound is not None:
+            try:
+                self.paths = {
+                    "throw": create_wav_file("throw"),
+                    "hit": create_wav_file("hit"),
+                    "gameover": create_wav_file("gameover"),
+                }
+            except (OSError, wave.Error):
+                # 音声ファイルの作成に失敗しても、ゲーム本体は遊べるようにします。
+                self.paths = {}
+
+    def play(self, kind):
+        """指定した効果音を非同期で鳴らす。再生できない場合はシステムベルを使う。"""
+        path = self.paths.get(kind)
+        if winsound is not None and path and os.path.exists(path):
+            try:
+                winsound.PlaySound(
+                    path,
+                    winsound.SND_FILENAME
+                    | winsound.SND_ASYNC
+                    | winsound.SND_NODEFAULT,
+                )
+                return
+            except (OSError, RuntimeError):
+                # 再生デバイスなどの都合で失敗した場合も、ゲームは続行します。
+                pass
+
+        try:
+            self.root.bell()
+        except tk.TclError:
+            # ウィンドウ終了時に呼ばれた場合は何もしません。
+            pass
+
+
 class KnifeOrbitGame:
     """ゲームの状態管理と、Tkinter画面の描画をまとめたクラス。"""
 
@@ -23,6 +146,7 @@ class KnifeOrbitGame:
         self.root = root
         self.root.title("Knife Orbit")
         self.root.resizable(False, False)
+        self.sound = SoundPlayer(root)
 
         # Canvas（描画用の領域）に丸太、ナイフ、文字を描きます。
         self.canvas = tk.Canvas(
@@ -73,6 +197,7 @@ class KnifeOrbitGame:
             return
         self.state = "throwing"
         self.projectile_y = START_TIP_Y
+        self.sound.play("throw")
 
     def restart(self, event=None):
         """ゲームオーバー時などに、レベル1から再開する。"""
@@ -126,8 +251,10 @@ class KnifeOrbitGame:
 
         if collided:
             self.state = "gameover"
+            self.sound.play("gameover")
             return
 
+        self.sound.play("hit")
         # 投げ先の画面角度から現在の丸太の回転角を引き、
         # 丸太に対する角度として保存します。これで一緒に回転します。
         self.knives.append({"angle": TARGET_ANGLE - self.rotation})
