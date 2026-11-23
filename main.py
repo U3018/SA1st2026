@@ -3,6 +3,8 @@ import time
 import tkinter as tk
 
 
+# 画面やゲームの速さを調整する設定値です。
+# 表示サイズ、丸太の位置・大きさ、ナイフの速度を変えたいときはここを編集します。
 WIDTH = 900
 HEIGHT = 700
 CENTER_X = WIDTH // 2
@@ -10,15 +12,19 @@ CENTER_Y = 315
 LOG_RADIUS = 82
 START_TIP_Y = 548
 THROW_SPEED = 820
-TARGET_ANGLE = math.pi / 2
+TARGET_ANGLE = math.pi / 2  # 投げる先の角度。画面では真下を表します。
 
 
 class KnifeOrbitGame:
+    """ゲームの状態管理と、Tkinter画面の描画をまとめたクラス。"""
+
     def __init__(self, root):
+        """ウィンドウ、入力操作、最初のレベルを準備する。"""
         self.root = root
         self.root.title("Knife Orbit")
         self.root.resizable(False, False)
 
+        # Canvas（描画用の領域）に丸太、ナイフ、文字を描きます。
         self.canvas = tk.Canvas(
             root,
             width=WIDTH,
@@ -28,48 +34,66 @@ class KnifeOrbitGame:
         )
         self.canvas.pack()
         self.canvas.configure(takefocus=True)
+
+        # マウスクリックかスペースキーで投げ、Rキーで最初からやり直します。
         self.canvas.bind("<Button-1>", self.throw_knife)
         self.root.bind("<space>", self.throw_knife)
         self.root.bind("<r>", self.restart)
         self.root.bind("<R>", self.restart)
 
+        # ゲームを開始し、以降は一定間隔で update を呼び出します。
         self.level = 1
         self.start_level()
         self.last_update = time.perf_counter()
         self.root.after(100, self.canvas.focus_set)
         self.update()
 
+    # --- ゲームの状態更新 ---
+
     def start_level(self):
+        """現在のレベルに必要な本数・回転速度などを初期化する。"""
+        # READMEのルールに合わせ、レベル n では n + 9 本を用意します。
         self.knives_left = self.level + 9
         self.rotation = 0.0
+
+        # レベルが上がるごとに回転を速くします。偶数レベルは逆向きです。
         self.rotation_direction = 1 if self.level % 2 == 1 else -1
         self.rotation_speed = min(0.7 + (self.level - 1) * 0.16, 2.8)
-        # The first knife gives each round an obstacle to watch.
+
+        # 最初から丸太に1本刺しておき、避ける対象を作ります。
+        # angle は丸太に対する相対角度で、回転中も丸太と一緒に動きます。
         self.knives = [{"angle": 0.0}]
         self.projectile_y = START_TIP_Y
         self.state = "playing"
 
     def throw_knife(self, event=None):
+        """投げられる状態なら、ナイフを飛ばし始める。"""
+        # 投げている最中やゲーム終了後の連続入力は受け付けません。
         if self.state != "playing" or self.knives_left <= 0:
             return
         self.state = "throwing"
         self.projectile_y = START_TIP_Y
 
     def restart(self, event=None):
+        """ゲームオーバー時などに、レベル1から再開する。"""
         self.level = 1
         self.start_level()
 
     def update(self):
+        """時間経過に応じてゲームを進め、画面を再描画する。"""
+        # 実際に経過した秒数を使うため、描画間隔の揺れがあっても動きが安定します。
         now = time.perf_counter()
         elapsed = min(now - self.last_update, 0.05)
         self.last_update = now
 
+        # プレイ中は丸太を回転させます。% で角度を 0〜2π に保ちます。
         if self.state in ("playing", "throwing"):
             self.rotation = (
                 self.rotation
                 + self.rotation_direction * self.rotation_speed * elapsed
             ) % (2 * math.pi)
 
+        # 飛んでいるナイフの先端が丸太に届いたら、衝突判定を行います。
         if self.state == "throwing":
             self.projectile_y -= THROW_SPEED * elapsed
             target_y = CENTER_Y + LOG_RADIUS - 4
@@ -81,14 +105,21 @@ class KnifeOrbitGame:
         self.root.after(16, self.update)
 
     def finish_throw(self):
+        """着弾したナイフの衝突を調べ、成功・失敗・レベルクリアを決める。"""
         self.knives_left -= 1
         collided = False
 
         for knife in self.knives:
+            # 丸太に対する角度に丸太の回転角を足すと、画面上の角度になります。
             knife_world_angle = knife["angle"] + self.rotation
+
+            # 角度の差を -π〜π に折り返します。
+            # こうすると、0度と360度の境目でも正しい距離で判定できます。
             difference = (knife_world_angle - TARGET_ANGLE + math.pi) % (
                 2 * math.pi
             ) - math.pi
+
+            # 角度が近すぎる場合は、既存のナイフに当たったとみなします。
             if abs(difference) < 0.22:
                 collided = True
                 break
@@ -97,7 +128,8 @@ class KnifeOrbitGame:
             self.state = "gameover"
             return
 
-        # Store the angle relative to the log so this knife rotates with it.
+        # 投げ先の画面角度から現在の丸太の回転角を引き、
+        # 丸太に対する角度として保存します。これで一緒に回転します。
         self.knives.append({"angle": TARGET_ANGLE - self.rotation})
         if self.knives_left == 0:
             self.state = "levelup"
@@ -106,11 +138,16 @@ class KnifeOrbitGame:
             self.state = "playing"
 
     def next_level(self):
+        """レベルクリア表示の後、次のレベルを開始する。"""
+        # タイマー実行前にRキーで再開していた場合は、レベルを進めません。
         if self.state == "levelup":
             self.level += 1
             self.start_level()
 
+    # --- 画面描画 ---
+
     def draw(self):
+        """画面を消してから、背景上に各パーツを順番に描く。"""
         self.canvas.delete("all")
         self.draw_header()
         self.draw_arena()
@@ -120,6 +157,7 @@ class KnifeOrbitGame:
             self.draw_overlay()
 
     def draw_header(self):
+        """タイトル、レベル、丸太の回転速度を画面上部に表示する。"""
         self.canvas.create_text(
             46,
             37,
@@ -156,7 +194,10 @@ class KnifeOrbitGame:
         self.canvas.create_line(44, 105, WIDTH - 44, 105, fill="#303843", width=1)
 
     def draw_arena(self):
+        """プレイ領域、丸太に刺さったナイフ、投げるナイフを描く。"""
         orbit_radius = 130
+
+        # 点線の円はナイフが回る範囲を示します。
         self.canvas.create_oval(
             CENTER_X - orbit_radius,
             CENTER_Y - orbit_radius,
@@ -169,12 +210,14 @@ class KnifeOrbitGame:
 
         self.draw_log()
 
+        # 保存した相対角度に丸太の回転角を足して、各ナイフの位置を求めます。
         for knife in self.knives:
             angle = knife["angle"] + self.rotation
             tip_x = CENTER_X + math.cos(angle) * (LOG_RADIUS - 3)
             tip_y = CENTER_Y + math.sin(angle) * (LOG_RADIUS - 3)
             self.draw_knife(tip_x, tip_y, angle + math.pi, small=True)
 
+        # 飛行中なら現在位置、待機中ならスタート位置にナイフを表示します。
         if self.state in ("playing", "throwing", "gameover"):
             if self.state in ("throwing", "gameover"):
                 tip_y = self.projectile_y
@@ -183,6 +226,7 @@ class KnifeOrbitGame:
             self.draw_knife(CENTER_X, tip_y, -math.pi / 2)
 
     def draw_log(self):
+        """丸太本体、影、木目を描く。木目も回転させて動きを見せます。"""
         x1 = CENTER_X - LOG_RADIUS
         y1 = CENTER_Y - LOG_RADIUS
         x2 = CENTER_X + LOG_RADIUS
@@ -215,7 +259,7 @@ class KnifeOrbitGame:
             width=2,
         )
 
-        # These moving grain marks make the log's rotation easy to see.
+        # 放射状の木目を回転角に合わせて描き直し、丸太の回転を分かりやすくします。
         for index in range(8):
             angle = self.rotation + index * (2 * math.pi / 8)
             inner = 27
@@ -230,6 +274,7 @@ class KnifeOrbitGame:
                 capstyle=tk.ROUND,
             )
 
+        # 小さな節も木目と一緒に動かします。
         for index in range(3):
             angle = self.rotation + index * (2 * math.pi / 3) + 0.35
             knot_x = CENTER_X + math.cos(angle) * 43
@@ -254,6 +299,8 @@ class KnifeOrbitGame:
         )
 
     def draw_knife(self, tip_x, tip_y, direction, small=False):
+        """先端座標と向きを使い、刃・柄からなるナイフを描く。"""
+        # small=True は丸太に刺さったナイフ用の縮小表示です。
         blade_length = 23 if small else 26
         handle_length = 26 if small else 30
         blade_half_width = 4 if small else 5
@@ -263,6 +310,8 @@ class KnifeOrbitGame:
         unit_y = math.sin(direction)
         side_x = -unit_y
         side_y = unit_x
+
+        # 刃の付け根と柄の端を、ナイフの向きと長さから計算します。
         blade_base_x = tip_x - unit_x * blade_length
         blade_base_y = tip_y - unit_y * blade_length
         handle_end_x = blade_base_x - unit_x * handle_length
@@ -310,6 +359,7 @@ class KnifeOrbitGame:
         )
 
     def draw_footer(self):
+        """残り本数とキー操作を画面下部に表示する。"""
         self.canvas.create_line(44, 630, WIDTH - 44, 630, fill="#303843", width=1)
         self.canvas.create_text(
             48,
@@ -329,6 +379,7 @@ class KnifeOrbitGame:
         )
 
     def draw_overlay(self):
+        """ゲームオーバーまたはレベルクリア時の案内を重ねて表示する。"""
         self.canvas.create_rectangle(
             0,
             0,
@@ -374,10 +425,12 @@ class KnifeOrbitGame:
 
 
 def main():
+    """Tkinterウィンドウを作成してゲームを起動する。"""
     root = tk.Tk()
     KnifeOrbitGame(root)
     root.mainloop()
 
 
+# このファイルを直接実行したときだけゲームを起動します。
 if __name__ == "__main__":
     main()
